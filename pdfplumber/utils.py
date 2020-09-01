@@ -11,7 +11,7 @@ DEFAULT_X_TOLERANCE = 3
 DEFAULT_Y_TOLERANCE = 3
 
 
-def cluster_list(xs, tolerance=0):
+def cluster_list(xs, tolerance=0, fst_getter=itemgetter(0), sec_getter=itemgetter(0)):
     tolerance = decimalize(tolerance)
     if tolerance == Decimal(0):
         return [[x] for x in sorted(xs)]
@@ -180,6 +180,15 @@ def collate_line(line_chars, tolerance=DEFAULT_X_TOLERANCE):
     return coll
 
 
+def get_max_bbox(bboxes):
+    return (
+        min(map(itemgetter(0), bboxes)),
+        min(map(itemgetter(1), bboxes)),
+        max(map(itemgetter(2), bboxes)),
+        max(map(itemgetter(3), bboxes)),
+    )
+
+
 def objects_to_rect(objects):
     return {
         "x0": min(map(itemgetter("x0"), objects)),
@@ -218,16 +227,23 @@ def extract_words(
     y_tolerance = decimalize(y_tolerance)
 
     def process_word_chars(chars, upright):
-        x0, top, x1, bottom = objects_to_bbox(chars)
+        # x0, top, x1, bottom = objects_to_bbox(chars)
 
         return {
-            "x0": x0,
-            "x1": x1,
-            "top": top,
-            "bottom": bottom,
+            "bbox": objects_to_bbox(chars),
             "upright": upright,
             "text": "".join(map(itemgetter("text"), chars)),
+            "chars_bbox": [[c['x0'], c['x1'], c['y0'], c['y1']] for c in chars]
         }
+        #
+        # return {
+        #     "x0": x0,
+        #     "x1": x1,
+        #     "top": top,
+        #     "bottom": bottom,
+        #     "upright": upright,
+        #     "text": "".join(map(itemgetter("text"), chars)),
+        # }
 
     def get_line_words(chars, upright, tolerance):
         get_text = itemgetter("text")
@@ -286,8 +302,59 @@ def extract_words(
         for line_chars in clusters:
             words += get_line_words(line_chars, upright, tolerance=x_tolerance)
 
-    return words
+    return postprocess_words(words)
 
+def postprocess_words(words, para_gap_y=2, para_gap_x=5):
+    # 多行合并，去除空字符文本
+    new_words = []
+    para_idx2words = {}
+
+    def merge_by_yspans(xs, top_getter=itemgetter(0), bot_getter=itemgetter(1)):
+        tolerance = decimalize(para_gap_y)
+        if tolerance == Decimal(0):
+            return [[x] for x in sorted(xs)]
+        if len(xs) < 2:
+            return [[x] for x in sorted(xs)]
+        groups = []
+        xs = list(sorted(xs))
+        current_group = [xs[0]]
+        prev = xs[0]
+        for x in xs[1:]:
+            if top_getter(x) <= (bot_getter(prev) + tolerance):
+                current_group.append(x)
+            else:
+                groups.append(current_group)
+                current_group = [x]
+            prev = x
+        groups.append(current_group)
+        return groups
+
+    def merge_words(words_groups):
+        texts = [w['text'] for w in words_groups]
+        bboxes = [w['bbox'] for w in words_groups]
+        chars_bboxes = [w['chars_bbox'] for w in words_groups]
+        return {
+            "bbox": get_max_bbox(bboxes),
+            "text": '\n'.join(texts),
+            "chars_bbox": list(itertools.chain(*chars_bboxes)),
+        }
+
+    #
+    spans = set((w['bbox'][1], w['bbox'][3]) for w in words if w['text'].strip())
+    words_groupby_yspan = itertools.groupby(words, key=lambda w: (w['bbox'][1], w['bbox'][3]))
+    yspan2words = {span: list(words) for span, words in words_groupby_yspan}
+    paras_yspans = merge_by_yspans(spans)
+    paras_words = []
+    for spans in paras_yspans:
+        pwds = [yspan2words[sp] for sp in spans]
+        chained_wds = list(itertools.chain(*pwds))
+        #todo: 同行的不同段落拆分
+        paras_words.append(chained_wds)
+
+    for wds in paras_words:
+        new_words.append(merge_words(wds))
+
+    return new_words
 
 def extract_text(
     chars, x_tolerance=DEFAULT_X_TOLERANCE, y_tolerance=DEFAULT_Y_TOLERANCE

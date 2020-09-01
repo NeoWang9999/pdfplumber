@@ -1,3 +1,5 @@
+from pdfplumber.utils import objects_to_bbox
+
 from . import utils
 from operator import itemgetter
 import itertools
@@ -361,38 +363,56 @@ class Table(object):
     ):
 
         chars = self.page.chars
-        table_arr = []
+        table_dic = {
+            "rows": [],
+            "bbox": [_ for _ in self.bbox],
+            "page_num": self.page.page_number
+        }
 
         def char_in_bbox(char, bbox):
+            # x0, top, x1, bottom = 左上，右下
             v_mid = (char["top"] + char["bottom"]) / 2
             h_mid = (char["x0"] + char["x1"]) / 2
             x0, top, x1, bottom = bbox
             return (
-                (h_mid >= x0) and (h_mid < x1) and (v_mid >= top) and (v_mid < bottom)
+                (h_mid >= x0) and
+                (h_mid < x1) and
+                (v_mid >= top) and
+                (v_mid < bottom)
             )
 
         for row in self.rows:
             arr = []
-            row_chars = [char for char in chars if char_in_bbox(char, row.bbox)]
+            row_chars = [ char for char in chars
+                if char_in_bbox(char, row.bbox) ]
 
             for cell in row.cells:
-                if cell is None:
+                cell_dic = {
+                    "text": "",
+                    "bbox": None
+                }
+                if cell == None:
                     cell_text = None
                 else:
-                    cell_chars = [
-                        char for char in row_chars if char_in_bbox(char, cell)
-                    ]
+                    cell_chars = [ char for char in row_chars
+                        if char_in_bbox(char, cell) ]
 
                     if len(cell_chars):
-                        cell_text = utils.extract_text(
-                            cell_chars, x_tolerance=x_tolerance, y_tolerance=y_tolerance
-                        ).strip()
+                        cell_text = utils.extract_text(cell_chars,
+                                                       x_tolerance=x_tolerance,
+                                                       y_tolerance=y_tolerance).strip()
+                        cell_dic["bbox"] = [_ for _ in objects_to_bbox(cell_chars)]
+                        # cell_dic["bbox"] = get_max_bbox(bboxes=[
+                        #     (c["x0"], c["top"], c["x1"], c["bottom"]) for c in cell_chars])
                     else:
                         cell_text = ""
-                arr.append(cell_text)
-            table_arr.append(arr)
+                cell_dic["text"] = cell_text
+                arr.append(cell_dic)
+            if not any([c['bbox'] for c in arr]):  # 过滤掉空行
+                continue
+            table_dic['rows'].append(arr)
 
-        return table_arr
+        return table_dic
 
 
 TABLE_STRATEGIES = ["lines", "lines_strict", "text", "explicit"]
